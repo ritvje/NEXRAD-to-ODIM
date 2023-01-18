@@ -10,6 +10,8 @@ Requirements:
 - xarray
 - pyart
 - xradar
+- dask
+- h5py
 
 Author: Jenna Ritvanen <jenna.ritvanen@fmi.fi>
 
@@ -19,6 +21,8 @@ from pathlib import Path
 import pyart
 import xarray as xr
 import xradar as xd
+
+import dask
 
 import datetime as dt
 
@@ -107,15 +111,22 @@ def _write_odim_dataspace(source, destination):
             undetect = np.finfo(np.float_).max
 
         # set some defaults, if not available
-        scale_factor = float(enc.get("scale_factor", 1.0))
-        add_offset = float(enc.get("add_offset", 0.0))
+        # Calculate scale and offset
+        N_BITS = 16
+        add_offset = value.valid_min
+        scale_factor = (value.valid_max - value.valid_min) / (2 ** N_BITS - 2)
+        # scale_factor = float(enc.get("scale_factor", 1.0))
+        # add_offset = float(enc.get("add_offset", 0.0))
         _fillvalue = float(enc.get("_FillValue", undetect))
         dtype = enc.get("dtype", value.dtype)
+        nodata = N_BITS ** 2 - 1
+        undetect = 0.0
+
         what = {
             "quantity": PYART_TO_ODIM_FIELDS[value.name],
             "gain": scale_factor,
             "offset": add_offset,
-            "nodata": _fillvalue,
+            "nodata": nodata,
             "undetect": undetect,
         }
         _write_odim(what, h5_what)
@@ -126,19 +137,19 @@ def _write_odim_dataspace(source, destination):
         val = value.sortby(dim0).values
         fillval = _fillvalue * scale_factor
         fillval += add_offset
-        val[np.isnan(val)] = fillval
         val = (val - add_offset) / scale_factor
-        if np.issubdtype(dtype, np.integer):
-            val = np.rint(val).astype(dtype)
+        val[np.isnan(val)] = undetect
+        # if np.issubdtype(dtype, np.integer):
+        val = np.rint(val).astype(np.uint16)
         # todo: compression is chosen totally arbitrary here
         #  maybe parameterizing it?
         ds = h5_data.create_dataset(
             "data",
             data=val,
+            dtype=f"uint{N_BITS}",
             compression="gzip",
-            compression_opts=6,
+            compression_opts=9,
             fillvalue=_fillvalue,
-            dtype=dtype,
         )
         # if enc["dtype"] == "uint8":
         image = "IMAGE"
@@ -298,9 +309,16 @@ if __name__ == "__main__":
         type=str,
         help="Input directory path, all files ending with '_V06' will be processed",
     )
+    argparser.add_argument(
+        "--nworkers",
+        type=int,
+        default=1,
+        help="Number of workers",
+    )
     args = argparser.parse_args()
 
-    for inputpath in Path(args.input_dir).glob("*_V06"):
+    @dask.delayed
+    def transform_file(inputpath):
         # Read NEXRAD Level 2 file
         radar = pyart.io.read_nexrad_archive(inputpath)
 
@@ -317,3 +335,10 @@ if __name__ == "__main__":
 
         # Remove netcdf file
         inputpath.with_suffix(".nc").unlink()
+
+    res = []
+    for inputpath in Path(args.input_dir).glob("*_V06"):
+        res.append(transform_file(inputpath))
+
+    scheduler = "processes" if args.nworkers > 1 else "single-threaded"
+    dask.compute(*res, num_workers=args.nworkers, scheduler=scheduler)
