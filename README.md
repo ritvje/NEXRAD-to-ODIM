@@ -13,6 +13,7 @@ Requirements:
 - xradar
 - dask
 - h5py
+- arrow
 
 ## Usage
 

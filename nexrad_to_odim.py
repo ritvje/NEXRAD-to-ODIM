@@ -12,6 +12,7 @@ Requirements:
 - xradar
 - dask
 - h5py
+- arrow
 
 Author: Jenna Ritvanen <jenna.ritvanen@fmi.fi>
 
@@ -21,6 +22,7 @@ from pathlib import Path
 import pyart
 import xarray as xr
 import xradar as xd
+import arrow
 
 import dask
 
@@ -203,8 +205,10 @@ def to_odim(dtree, filename):
         what["object"] = "SCAN"
     # todo: parameterize version
     what["version"] = "H5rad 2.2"
-    what["date"] = str(root["time_coverage_start"].values)[:10].replace("-", "")
-    what["time"] = str(root["time_coverage_end"].values)[11:19].replace(":", "")
+
+    timestamp = arrow.get(root["time_coverage_end"].item().decode())
+    what["date"] = timestamp.strftime("%Y%m%d")
+    what["time"] = timestamp.strftime("%H%M%S")
     what["source"] = root.attrs["instrument_name"]
 
     h5_what = h5.create_group("what")
